@@ -107,6 +107,12 @@ MCurl &MCurl::onSuccess(const std::function<void (std::shared_ptr<MCurl::UserDat
     return *this;
 }
 
+MCurl &MCurl::onTrace(const std::function<void(std::shared_ptr<UserData>&, const char *key, unsigned char *value, size_t value_size)> &callback)
+{
+    _traceCallback = callback;
+    return *this;
+}
+
 std::string MCurl::timestamp()
 {
     time_t t = time(nullptr);
@@ -246,6 +252,12 @@ void MCurl::new_job_cb(ev::async &, int) noexcept
         {
             // почему-то не создался хендл
             throw std::runtime_error("unable to acquire easy handle");
+        }
+
+        if(_traceCallback) {
+            curl_easy_setopt(easy, CURLOPT_DEBUGFUNCTION, trace_cb);
+            curl_easy_setopt(easy, CURLOPT_DEBUGDATA, this);
+            curl_easy_setopt(easy, CURLOPT_VERBOSE, 1L);
         }
 
         _on_the_go.insert(std::make_pair(easy, std::move(job)));
@@ -745,6 +757,40 @@ size_t MCurl::read_cb(char *buffer, size_t size, size_t nitems, void *user_ptr)
         j->_bytes_done += len;
     }
     return len;
+}
+
+int MCurl::trace_cb(CURL *easy, curl_infotype type, unsigned char *data, size_t size, MCurl *owner) {
+    const char *text;
+
+    switch(type) {
+        case CURLINFO_TEXT:
+            fprintf(stderr, "== Info: %s", data);
+            /* FALLTHROUGH */
+        default: /* in case a new one is introduced to shock us */
+            return 0;
+
+        case CURLINFO_HEADER_OUT:
+            text = "=> Send header";
+            break;
+        case CURLINFO_DATA_OUT:
+            text = "=> Send data";
+            break;
+        case CURLINFO_HEADER_IN:
+            text = "<= Recv header";
+            break;
+        case CURLINFO_DATA_IN:
+            text = "<= Recv data";
+            break;
+    }
+    if(owner->_traceCallback) {
+        try {
+            MCurl::Job *job;
+            curl_easy_getinfo(easy, CURLINFO_PRIVATE, &job);
+            owner->_traceCallback(job->user_data, text, data, size);
+        } catch(...) {
+        }
+    }
+    return 0;
 }
 
 std::string MCurl::generateBoundary(size_t length)
