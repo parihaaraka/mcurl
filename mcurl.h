@@ -148,6 +148,7 @@ public:
     MCurl& onComplete(const std::function<void(std::shared_ptr<UserData>&)> &callback);
     MCurl& onFailue(const std::function<void(std::shared_ptr<UserData>&, std::string &request, std::vector<std::string> &request_header, const char *error, long status)> &callback);
     MCurl& onSuccess(const std::function<void(std::shared_ptr<UserData>&, std::string &request, std::vector<std::string> &request_header, std::string &response, std::string &response_header, long status)> &callback);
+    MCurl& onTrace(const std::function<void(std::shared_ptr<UserData>&, const char *key, unsigned char *value, size_t value_size)> &callback);
 
     size_t queueSize() const { std::lock_guard<std::mutex> lk(_locker); return _in_queue.size(); }
     bool isActive() const { return _new_job_watcher.is_active(); }
@@ -203,6 +204,7 @@ private:
     std::function<void(std::shared_ptr<UserData>&, std::string &request, std::vector<std::string> &request_header, std::string &response, std::string &response_header, long status)> _successCallback;
     std::function<void(std::shared_ptr<UserData>&, std::string &request, std::vector<std::string> &request_header, const char *error, long status)> _failureCallback;
     std::function<void(std::shared_ptr<UserData>&)> _completeCallback;
+    std::function<void(std::shared_ptr<UserData>&, const char *key, unsigned char *value, size_t value_size)> _traceCallback;
 
     // обработчик сигнала послупления задания
     // creates a new easy handle and adds it to the global curl_multi
@@ -236,6 +238,9 @@ private:
 
     // callback для получения curl'ом данных для отправки
     static size_t read_cb(char *buffer, size_t size, size_t nitems, void *user_ptr);
+
+    // callback для получения отладочной информации по запросу
+    static int trace_cb(CURL *easy, curl_infotype type, unsigned char *data, size_t size, MCurl *owner);
 
 };
 
