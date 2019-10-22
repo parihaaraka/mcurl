@@ -107,6 +107,7 @@ public:
         std::string subject;  ///< тема письма
         std::vector<std::string> request_header;
         std::string request;  ///< тело POST-запроса или текстовая часть письма
+        std::string custom_method; //GET by default
         std::vector<ContentPart> request_parts;
         std::string response_header;
         std::string response;
