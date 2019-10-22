@@ -365,6 +365,10 @@ void MCurl::new_job_cb(ev::async &, int) noexcept
             {
                 curl_easy_setopt(easy, CURLOPT_HTTPGET, true);
             }
+
+            if(!j.custom_method.empty()) {
+                curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, j.custom_method.c_str());
+            }
         }
         curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, write_cb);
         curl_easy_setopt(easy, CURLOPT_WRITEDATA, &j.response);
