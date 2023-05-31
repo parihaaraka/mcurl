@@ -243,6 +243,7 @@ private:
     // callback для получения отладочной информации по запросу
     static int trace_cb(CURL *easy, curl_infotype type, unsigned char *data, size_t size, MCurl *owner);
 
+    static std::atomic<int> instances_counter;
 };
 
 #endif // MCURL_H

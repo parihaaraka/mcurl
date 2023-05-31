@@ -1,14 +1,20 @@
 #include "mcurl.h"
 #include <algorithm>
-#include "string.h"
+#include <string.h>
 #include <random>
+
+std::atomic<int> MCurl::instances_counter{0};
 
 MCurl::MCurl(struct ev_loop *loop)
     : _loop(loop), _multi(0), _max_simultanous_transfers(10)
 {
-    CURLcode res = curl_global_init(CURL_GLOBAL_DEFAULT);
-    if (res)
-        throw std::runtime_error(curl_easy_strerror(res));
+    if (!instances_counter.load())
+    {
+        CURLcode res = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (res)
+            throw std::runtime_error(curl_easy_strerror(res));
+        ++instances_counter;
+    }
 
     _multi = curl_multi_init();
     if (!_multi)
@@ -35,7 +41,10 @@ MCurl::~MCurl()
 
     // задраиваем люки
     curl_multi_cleanup(_multi);   // curl_multi_cleanup should be called when all easy handles are removed
-    curl_global_cleanup();
+
+    --instances_counter;
+    if (!instances_counter.load())
+        curl_global_cleanup();
 }
 
 void MCurl::enqueue(MCurl::Job &&job)
