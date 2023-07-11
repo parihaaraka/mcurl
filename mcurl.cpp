@@ -28,9 +28,12 @@ MCurl::MCurl(struct ev_loop *loop)
     curl_multi_setopt(_multi, CURLMOPT_TIMERFUNCTION, multi_timer_cb);
     curl_multi_setopt(_multi, CURLMOPT_TIMERDATA, this);
 
-    _timeout_timer.set(loop);
-    _new_job_watcher.set(loop);
-    _stop_signal_watcher.set(loop);
+    if (loop)
+    {
+        _timeout_timer.set(loop);
+        _new_job_watcher.set(loop);
+        _stop_signal_watcher.set(loop);
+    }
 }
 
 MCurl::~MCurl()
@@ -317,9 +320,6 @@ void MCurl::new_job_cb(ev::async &, int) noexcept
             for (auto &r: j.recipients)
                 j.curl_recipients = curl_slist_append(j.curl_recipients, r.c_str());
             curl_easy_setopt(easy, CURLOPT_MAIL_RCPT, j.curl_recipients);
-
-            curl_easy_setopt(easy, CURLOPT_USERNAME, j.user.c_str());
-            curl_easy_setopt(easy, CURLOPT_PASSWORD, j.password.c_str());
             curl_easy_setopt(easy, CURLOPT_MAIL_FROM, j.sender.c_str() );
 
             curl_easy_setopt(easy, CURLOPT_READFUNCTION, read_cb);
@@ -389,6 +389,12 @@ void MCurl::new_job_cb(ev::async &, int) noexcept
         curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 20L);
         curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 8L);
         curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 30L);
+
+        if (!j.user.empty())
+        {
+            curl_easy_setopt(easy, CURLOPT_USERNAME, j.user.c_str());
+            curl_easy_setopt(easy, CURLOPT_PASSWORD, j.password.c_str());
+        }
 
         if ( ! j.verify_peer ) {
             curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L); // don't verify the certificate's name against host
