@@ -1,66 +1,137 @@
 #include <iostream>
+#include <thread>
 #include "mcurl.h"
 
 using namespace std;
 
-void signal_cb(ev::sig &w, int)
+void signal_cb(struct ev_loop *loop, ev_signal *w, int)
 {
-    cout << "caught signal " << w.signum << endl;
-    w.loop.break_loop();
+    cout << "caught signal " << w->signum << endl;
+    ev_break(loop);
 }
 
 int main(int argc, char *argv[])
 {
-    MCurl sender;
-    sender.onSuccess([](
-                     shared_ptr<MCurl::UserData> &,
-                     string &,
-                     vector<string> &,
-                     string &response,
-                     string &response_header,
-                     int reply_code)
-    {
-        cout << "response " << reply_code << endl
-             << response_header << endl
-             << response << endl;
-    });
+    mcurl sender;
 
-    sender.onFailue([](shared_ptr<MCurl::UserData> &,
-                    string &,
-                    vector<string>&,
-                    const char *error,
-                    long status)
-    {
-        cout << "error " << error << endl
-             << "status " << status << endl;
-    });
-
-    ev::default_loop loop;
-    ev::sig term_signal_watcher;
-    term_signal_watcher.set(loop.raw_loop);
-    term_signal_watcher.set<&signal_cb>();
-    term_signal_watcher.start(SIGTERM);
-    term_signal_watcher.loop.unref();
-
-    ev::sig int_signal_watcher;
-    int_signal_watcher.set(loop.raw_loop);
-    int_signal_watcher.set<&signal_cb>();
-    int_signal_watcher.start(SIGINT);
-    int_signal_watcher.loop.unref();
-
-    size_t reqCount = 100;
+    size_t batch_size = 4;
+    size_t counter;
     if (argc > 1)
     {
         auto tmp = strtol(argv[1], nullptr, 10);
         if (tmp > 0)
-            reqCount = static_cast<size_t>(tmp);
+            batch_size = static_cast<size_t>(tmp);
     }
 
-    for (int i = 0; i < reqCount; ++i)
-        sender.enqueue({nullptr, "https://httpbin.org/post", {}, "request=" + to_string(i)});
+    auto enqueue_batch = [&](std::function<void(size_t &counter)> fin, std::string url = "https://postman-echo.com/post")
+    {
+        counter = batch_size;
+        for (size_t i = 1; i <= batch_size; ++i)
+        {
+            mcurl::http_request r;
+            r.url = url;
+            r.body = "request=" + to_string(i);
+            sender.enqueue(r, [&counter, i, fin](mcurl::http_request &, mcurl::response &resp){
+                cout << "~ req " << i << ": status " << resp.status;
+                if (!resp.error.empty())
+                    cout << ", error: " << resp.error;
+                cout << endl << endl;
+                //cout << "------------------ req " << i << endl
+                //     << " status: " << resp.status << endl
+                //     << " error:  " << resp.error << endl
+                //     << " body:   " << resp.body << endl
+                //     << " headers:" << endl;
+                //for (auto &h: resp.headers)
+                //{
+                //    cout << "   " << h.first << ": " << h.second;
+                //}
+                //cout << endl << endl;
 
-    sender.start(true, loop.raw_loop);
-    loop.run(0);
-    cout << "mcurl loop stopped" << endl;
+                fin(counter);
+                --counter;
+            });
+        }
+
+    };
+
+    struct ev_loop *loop = EV_DEFAULT;
+    ev_signal term_signal_watcher;
+    ev_signal_init(&term_signal_watcher, &signal_cb, SIGTERM);
+    ev_signal_start(loop, &term_signal_watcher);
+    ev_unref(loop);
+
+    ev_signal int_signal_watcher;
+    ev_signal_init(&int_signal_watcher, &signal_cb, SIGINT);
+    ev_signal_start(loop, &int_signal_watcher);
+    ev_unref(loop);
+
+    //---------------------------------------------------------------------------------
+
+    // explicit loop break
+    enqueue_batch([](size_t &counter){
+        if (counter == 1)
+            ev_break(EV_DEFAULT);
+    });
+    sender.start(loop);
+    ev_run(loop, 0);
+    cout << "explicit loop break after all jobs" << endl << endl;
+
+    // stop() should stop all watchers when active jobs done => natural loop break
+    enqueue_batch([&sender, batch_size](size_t &counter){
+        // init stop after first successful request
+        if (counter == batch_size)
+            sender.stop(
+                [&counter](){
+                    cout << "finished, active tasks left: " << counter << endl;
+                });
+    });
+    sender.start(loop);
+    ev_run(loop, 0);
+    cout << "implicit loop break after active tasks done" << endl << endl;
+
+    enqueue_batch([&sender, batch_size](size_t &counter){
+        if (counter == batch_size / 2)
+            sender.terminate(
+                [&counter](){
+                    cout << "terminated, active tasks left: " << counter << endl;
+                });
+    });
+    sender.start(loop);
+    ev_run(loop, 0);
+    cout << "implicit loop break after termination" << endl << endl;
+
+    //---------------------------------------------------------------------------------
+
+    enqueue_batch([&sender, batch_size](size_t &counter){
+        // init stop after first successful request
+        if (counter == batch_size - 1)
+        {
+            std::this_thread::sleep_for(30s); // freeze mcurl
+            sender.stop(
+                [&counter](){
+                    cout << "finished, active tasks left: " << counter << endl;
+                });
+        }
+    });
+    sender.start(loop);
+    ev_run(loop, 0);
+    cout << "implicit loop break after timeout and active tasks done" << endl << endl;
+
+    enqueue_batch([&sender, batch_size](size_t &counter){
+        if (counter == batch_size / 2)
+        {
+            std::this_thread::sleep_for(30s); // freeze mcurl
+            sender.terminate(
+                [&counter](){
+                    cout << "terminated, active tasks left: " << counter << endl;
+                });
+        }
+    });
+    sender.start(loop);
+    ev_run(loop, 0);
+    cout << "implicit loop break after timeout and termination" << endl << endl;
+
+    //---------------------------------------------------------------------------------
+
     return 0;
 }
