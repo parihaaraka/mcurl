@@ -575,10 +575,8 @@ int MCurl::multi_timer_cb(CURLM *, long timeout_ms, MCurl *owner)
 {
     // man: A timeout_ms value of -1 means you should delete your timer.
     owner->_timeout_timer.stop();
-    if (timeout_ms > 0)
+    if (timeout_ms >= 0)
         owner->_timeout_timer.start(timeout_ms / 1000.0);
-    else if (!timeout_ms)
-        owner->timer_cb(owner->_timeout_timer, 0);
     return 0;
 }
 
