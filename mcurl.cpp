@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <string.h>
 #include <random>
+#include <array>
 
 std::atomic<int> MCurl::instances_counter{0};
 
