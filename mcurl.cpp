@@ -354,16 +354,28 @@ void MCurl::new_job_cb(ev::async &, int) noexcept
             if (!j.request_parts.empty())
             {
                 curl_httppost *lastptr = nullptr;
+#if LIBCURL_VERSION_NUM >= 0x075600
+                j.mime = curl_mime_init(easy);
+#endif
                 for (size_t i = 0; i < j.request_parts.size(); ++i)
                 {
                     auto const &part = j.request_parts[i];
-                    //  DEPRECATED in 7.56.0 !!!
+#if LIBCURL_VERSION_NUM < 0x075600
                     curl_formadd(&(j.formpost), &lastptr,
                                  CURLFORM_COPYNAME, part.name.c_str(),
                                  CURLFORM_COPYCONTENTS, part.source.c_str(),
                                  CURLFORM_END);
+#else
+                    auto mime_part = curl_mime_addpart(j.mime);
+                    curl_mime_name(mime_part, part.name.c_str());
+                    curl_mime_data(mime_part, part.source.data(), part.source.size());
+#endif
                 }
+#if LIBCURL_VERSION_NUM < 0x075600
                 curl_easy_setopt(easy, CURLOPT_HTTPPOST, j.formpost);
+#else
+                curl_easy_setopt(easy, CURLOPT_MIMEPOST, j.mime);
+#endif
             }
             else if (!j.request.empty())
             {
@@ -863,4 +875,22 @@ MCurl::Job::ContentPart MCurl::Job::ContentPart::form_data(std::string name, std
     p.source = buffer;
     p.name = name;
     return p;
+}
+
+MCurl::Job::~Job() {
+    // задание для curl'а недоступно пользователю после помещения его в очередь
+    // методом enqueue(Job &&), не получится снаружи менять поля задания и
+    // косвенно воздействовать на внутренние переменные вроде curl_header, поэтому
+    // всё дотерпит до деструктора Job
+    if (curl_header)
+        curl_slist_free_all(curl_header);
+    if (curl_recipients)
+        curl_slist_free_all(curl_recipients);
+#if LIBCURL_VERSION_NUM < 0x075600
+    if (formpost)
+        curl_formfree(formpost);
+#else
+    if (mime)
+        curl_mime_free(mime);
+#endif
 }

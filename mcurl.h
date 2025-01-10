@@ -81,19 +81,7 @@ public:
             : user_data(udata), url(url), request_header(header), request_parts(_request_parts), cert(_cert), ca(ca), verify_peer(_verify_peer), _b64encoder(base64::CRLF)
         {}
 
-        ~Job()
-        {
-            // задание для curl'а недоступно пользователю после помещения его в очередь методом enqueue(Job &&),
-            // не получится снаружи менять поля задания и косвенно воздействовать на внутренние переменные вроде
-            // curl_header, поэтому всё дотерпит до деструктора Job
-            if (curl_header)
-                curl_slist_free_all(curl_header);
-            if (curl_recipients)
-                curl_slist_free_all(curl_recipients);
-            if (formpost)
-                curl_formfree(formpost);
-
-        }
+        ~Job();
 
         std::shared_ptr<UserData> user_data;
         std::string url;      ///< url c обязательным указанием протокола (http[s]://, smtp://)
@@ -118,7 +106,11 @@ public:
     private:
         enum class SmtpStage { None, Header, Body, PartHeader, PartBody, Footer };
         char error[CURL_ERROR_SIZE] = {0};
+#if LIBCURL_VERSION_NUM < 0x075600
         curl_httppost *formpost = nullptr;
+#else
+        curl_mime *mime = nullptr;
+#endif
         curl_slist *curl_header = nullptr;
         curl_slist *curl_recipients = nullptr;
         std::string _boundary;
