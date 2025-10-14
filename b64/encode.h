@@ -30,7 +30,7 @@ namespace base64
         // intermediate buffer for stream encoding
         static constexpr size_t stream_buf_size = 16777216;
 
-        encoder(base64_eol eol, int line_length = im_line_length, size_t buffersize_in = stream_buf_size);
+        encoder(base64_eol eol = base64_eol::CRLF, int line_length = im_line_length, size_t buffersize_in = stream_buf_size);
         encoder(size_t buffersize_in = stream_buf_size);
         void reset_state();
         void reconfig(base64_eol eol, int line_length = im_line_length, size_t buffersize_in = stream_buf_size);

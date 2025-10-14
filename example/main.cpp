@@ -1,39 +1,19 @@
 #include <iostream>
 #include "mcurl.h"
-
-using namespace std;
+#include "function2.hpp"
 
 void signal_cb(ev::sig &w, int)
 {
-    cout << "caught signal " << w.signum << endl;
+    std::cout << "caught signal " << w.signum << std::endl;
     w.loop.break_loop();
 }
 
 int main(int argc, char *argv[])
 {
-    MCurl sender;
-    sender.onSuccess([](
-                     shared_ptr<MCurl::UserData> &,
-                     string &,
-                     vector<string> &,
-                     string &response,
-                     string &response_header,
-                     int reply_code)
-    {
-        cout << "response " << reply_code << endl
-             << response_header << endl
-             << response << endl;
-    });
+    //mcurl sender;
+    //  make the result handler capture non-copyable objects:
+    mcurl<fu2::unique_function<void(mcurl_request&, mcurl_event)>> sender;
 
-    sender.onFailue([](shared_ptr<MCurl::UserData> &,
-                    string &,
-                    vector<string>&,
-                    const char *error,
-                    long status)
-    {
-        cout << "error " << error << endl
-             << "status " << status << endl;
-    });
 
     ev::default_loop loop;
     ev::sig term_signal_watcher;
@@ -48,7 +28,7 @@ int main(int argc, char *argv[])
     int_signal_watcher.start(SIGINT);
     int_signal_watcher.loop.unref();
 
-    size_t reqCount = 100;
+    size_t reqCount = 2;
     if (argc > 1)
     {
         auto tmp = strtol(argv[1], nullptr, 10);
@@ -56,11 +36,52 @@ int main(int argc, char *argv[])
             reqCount = static_cast<size_t>(tmp);
     }
 
-    for (int i = 0; i < reqCount; ++i)
-        sender.enqueue({nullptr, "https://httpbin.org/post", {}, "request=" + to_string(i)});
+    for (size_t i = 0; i < reqCount; ++i)
+    {
+        http_request r;
+        r.uri = "https://httpbin.org/post";
+        r.body = "request=" + std::to_string(i);
+
+        sender.enqueue({r}, [i, &sender, reqCount](mcurl_request &r, mcurl_event e){
+            if (std::holds_alternative<mcurl_success>(e))
+            {
+                auto &res = std::get<mcurl_success>(e);
+                std::cout << i << ": response " << res.status << std::endl
+                     << res.response_header << std::endl
+                     << res.response << std::endl;
+            }
+            else if (std::holds_alternative<mcurl_fail>(e))
+            {
+                auto &res = std::get<mcurl_fail>(e);
+                std::cout << i << ": error " << res.error << std::endl
+                     << "status " << res.status << std::endl;
+            }
+
+            // request again
+            auto &req = std::get<http_request>(r);
+            auto j = i + reqCount;
+            req.body = "request=" + std::to_string(j);
+
+            sender.enqueue({std::move(r)}, [j](mcurl_request &, mcurl_event e){
+                if (std::holds_alternative<mcurl_success>(e))
+                {
+                    auto &res = std::get<mcurl_success>(e);
+                    std::cout << j << ": response " << res.status << std::endl
+                         << res.response_header << std::endl
+                         << res.response << std::endl;
+                }
+                else if (std::holds_alternative<mcurl_fail>(e))
+                {
+                    auto &res = std::get<mcurl_fail>(e);
+                    std::cout << j << ": error " << res.error << std::endl
+                         << "status " << res.status << std::endl;
+                }
+            });
+        });
+    }
 
     sender.start(true, loop.raw_loop);
     loop.run(0);
-    cout << "mcurl loop stopped" << endl;
+    std::cout << "mcurl loop stopped" << std::endl;
     return 0;
 }
