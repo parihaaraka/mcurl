@@ -26,12 +26,13 @@
  * TODO: custom event loop
  */
 
+struct ci_comparator { bool operator()(const std::string &a, const std::string &b) const; };
 std::string encode1522(const std::string &value, bool wrap);
 
 struct mcurl_success
 {
-    std::string response;
-    std::string response_header;
+    std::string body;
+    std::map<std::string, std::string, ci_comparator> headers{ci_comparator()};
     long status = 0;
 };
 struct mcurl_fail
@@ -51,13 +52,13 @@ struct mcurl_content_part
 {
     // for smtp always `Content-Transfer-Encoding: base64`
     // https://developer.mozilla.org/ru/docs/Web/HTTP/Reference/Headers/Content-Disposition
-    enum class Disposition { Inline, FormData, Attachment };
+    enum class disposition_t { Inline, FormData, Attachment };
 
     // POST request attachments are not implemented (TODO?)
-    enum class SourceType  { Buffer, File };
+    enum class source_type_t  { Buffer, File };
 
-    SourceType source_type = SourceType::File;
-    Disposition disposition = Disposition::Attachment;
+    source_type_t source_type = source_type_t::File;
+    disposition_t disposition = disposition_t::Attachment;
     std::string source;         ///< content of the attachment or form field
     std::string name;           ///< `name` of `Content-Disposition` header
     std::string filename;       ///< `filename` of `Content-Disposition` header
@@ -70,54 +71,57 @@ struct mcurl_content_part
 
 struct request_common
 {
+    struct proto_state
+    {
+        curl_slist *curl_headers = nullptr;
+        curl_mime *mime = nullptr;
+        // helper to deal with folded headers (https://curl.se/libcurl/c/CURLOPT_HEADERFUNCTION.html)
+        std::string prev_header;
+    protected:
+        proto_state() = default;
+    };
+
     std::string uri;
     std::string user;
     std::string password;
-    std::vector<std::string> header;
-    std::string body;
-    std::vector<mcurl_content_part> parts;
+    std::vector<std::string> headers;
     std::string cert;
     std::string ca;
     std::string proxy;
     bool verify_peer = true;
+protected:
+    request_common() = default;
 };
 
 struct http_request : request_common
 {
-    struct proto_state
+    struct proto_state : request_common::proto_state
     {
-        curl_slist *curl_header = nullptr;
-        curl_mime *mime = nullptr;
     };
 
     std::string method; /// GET by default
+    std::variant<std::string, std::vector<mcurl_content_part>> body;
 };
 
 struct smtp_request : request_common
 {
-    struct proto_state
+    struct proto_state : request_common::proto_state
     {
-        enum class SmtpStage { None, Header, Body, PartHeader, PartBody, Footer };
-    #if LIBCURL_VERSION_NUM < 0x075600
-        curl_httppost *formpost = nullptr;
-    #else
-        curl_mime *mime = nullptr;
-    #endif
-        curl_slist *curl_header = nullptr;
+        enum class smtp_stage { None, Header, Body, PartHeader, PartBody, Footer };
         curl_slist *curl_recipients = nullptr;
-        std::string _boundary;
+        std::string boundary;
 
-        SmtpStage _stage = SmtpStage::None;
+        smtp_stage stage = smtp_stage::None;
         // размер переданной в curl части буфера, обрабатываемого на текущем шаге (SMTP)
-        size_t _bytes_done = 0;
+        size_t bytes_done = 0;
         // индекс обрабатываемого вложения
-        long _partnum = 0;
+        long partnum = 0;
         // буфер данных, отправляемых в curl (SMTP)
         // (перезаполняется по мере передачи различных частей тела сообщения)
-        std::string _data;
+        std::string data;
         // поток для считывания файлов вложений (gcc < 5 не умеет перемещать поток, поэтому указатель)
-        std::unique_ptr<std::ifstream> _in_stream;
-        base64::encoder _b64encoder = base64::CRLF;
+        std::unique_ptr<std::ifstream> in_stream;
+        base64::encoder b64encoder = base64::CRLF;
 
         proto_state() = default;
         ~proto_state();
@@ -132,21 +136,23 @@ struct smtp_request : request_common
             if (this != &other)
             {
                 std::swap(mime, other.mime);
-                std::swap(curl_header, other.curl_header);
+                std::swap(curl_headers, other.curl_headers);
+                prev_header.swap(other.prev_header);
                 std::swap(curl_recipients, other.curl_recipients);
-                _boundary.swap(other._boundary);
-                _stage = other._stage;
-                _bytes_done = other._bytes_done;
-                _partnum = other._partnum;
-                _data.swap(other._data);
-                _in_stream.reset(other._in_stream.release());
-                _b64encoder = other._b64encoder;
+                boundary.swap(other.boundary);
+                stage = other.stage;
+                bytes_done = other.bytes_done;
+                partnum = other.partnum;
+                data.swap(other.data);
+                in_stream.reset(other.in_stream.release());
+                b64encoder = other.b64encoder;
             }
             return *this;
         }
-
     };
 
+    std::string body;
+    std::vector<mcurl_content_part> attachments;
     std::string sender;
     // поддерживаются только готовые для заголовка smtp адреса
     // без подписи (имя владельца) и в угловых скобках
@@ -154,6 +160,8 @@ struct smtp_request : request_common
     std::vector<std::string> recipients; ///< адреса получателей письма в угловых скобках
     std::string subject;
 };
+
+#define MCURL_CALLABLE(fn_t) fn_t<void(mcurl_request&, mcurl_event)>
 
 class mcurl_global
 {
@@ -166,14 +174,17 @@ protected:
 using mcurl_request = std::variant<http_request, smtp_request>;
 using mcurl_request_state = std::variant<http_request::proto_state, smtp_request::proto_state>;
 
-template <typename Event_Callback = std::function<void(mcurl_request&, mcurl_event)>>
+template <typename EventCallbackType = MCURL_CALLABLE(std::function)>
 class mcurl : mcurl_global
 {
 private:
+    static_assert(std::is_invocable_v<EventCallbackType, mcurl_request&, mcurl_event>,
+                  "EventCallbackType parameter must be invocable with `(mcurl_request&, mcurl_event)` args.");
+
     struct job
     {
         mcurl_request req;
-        Event_Callback on_event;
+        EventCallbackType on_event;
         bool trace = false;
     };
 
@@ -190,6 +201,13 @@ private:
                 proto_state.emplace<http_request::proto_state>();
             else
                 proto_state.emplace<smtp_request::proto_state>();
+        }
+        request_common::proto_state& state()
+        {
+            if (std::holds_alternative<http_request>(j.req))
+                return std::get<http_request::proto_state>(proto_state);
+            else
+                return std::get<smtp_request::proto_state>(proto_state);
         }
     };
 
@@ -319,8 +337,7 @@ public:
         _new_job_watcher.send();
     }
 
-
-    void enqueue(mcurl_request req, Event_Callback on_event, bool trace = false)
+    void enqueue(mcurl_request req, EventCallbackType on_event, bool trace = false)
     {
         std::lock_guard<std::mutex> lk(_locker);
         _in_queue.push({std::move(req), std::move(on_event), trace});
@@ -401,11 +418,46 @@ private:
         return 0;
     }
 
-    static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *data)
+    static size_t write_body_cb(void *ptr, size_t size, size_t nmemb, void *data)
     {
+        std::string &dest = *static_cast<std::string*>(data);
         size_t total = size * nmemb;
-        std::string *dest = static_cast<std::string*>(data);
-        dest->append(static_cast<char*>(ptr), total);
+        dest.append(static_cast<char*>(ptr), total);
+        return total;
+    }
+
+    static size_t write_headers_cb(void *input, size_t size, size_t nmemb, void *user_ptr)
+    {
+        job_on_the_go &j = *static_cast<job_on_the_go*>(user_ptr);
+        auto &headers = j.success.headers;
+        size_t total = size * nmemb;
+        if (!total)
+            return total;
+        auto raw = std::string_view{static_cast<char*>(input), total};
+        // folded header continuation
+        if (std::isspace(raw.front()))
+        {
+            auto &s = j.state();
+            if (!s.prev_header.empty())
+            {
+                if (auto it = headers.find(s.prev_header); it != headers.end())
+                {
+                    raw.remove_prefix(std::min(raw.find_first_not_of(" \t\r\v"), raw.size()));
+                    it->second.append(raw);
+                }
+            }
+        }
+        else if (auto pos = raw.find(':'); pos != std::string::npos)
+        {
+            auto key = raw.substr(0, pos);
+            auto val = raw.substr(std::min(pos + 1, raw.size()), raw.size() - pos - 1);
+            val.remove_prefix(std::min(val.find_first_not_of(" \t"), val.size()));
+            auto &s = j.state();
+            s.prev_header = key;
+            headers[s.prev_header] = val;
+        }
+
+        //dest->append(static_cast<char*>(ptr), total);
         return total;
     }
 
@@ -416,83 +468,83 @@ private:
         auto &j = jg->j;
         auto req = std::get<smtp_request>(j.req);
         smtp_request::proto_state &s = std::get<smtp_request::proto_state>(jg->proto_state);
-        if (s._data.size() == s._bytes_done)
+        if (s.data.size() == s.bytes_done)
         {
             // определяем, на каком именно этапе опустошился буфер
-            switch (s._stage)
+            switch (s.stage)
             {
-            case smtp_request::proto_state::SmtpStage::None:
+            case smtp_request::proto_state::smtp_stage::None:
                 // начинаем заголовок
-                s._stage = smtp_request::proto_state::SmtpStage::Header;
-                s._partnum = -1;
-                for (std::string &h : req.header)
-                    s._data += h + "\r\n";
-                s._data += "\r\n";
+                s.stage = smtp_request::proto_state::smtp_stage::Header;
+                s.partnum = -1;
+                for (std::string &h : req.headers)
+                    s.data += h + "\r\n";
+                s.data += "\r\n";
                 break;
-            case smtp_request::proto_state::SmtpStage::Header:
+            case smtp_request::proto_state::smtp_stage::Header:
                 // Начинаем текстовую часть сообщения
                 // (кодируется в base64, чтобы можно было использовать юникод).
                 // Если тело пустое, то пофиг - всё равно воткнем заголовок и пустое тело.
-                s._stage = smtp_request::proto_state::SmtpStage::Body;
-                s._data = "--" + s._boundary + "\r\n"
+                s.stage = smtp_request::proto_state::smtp_stage::Body;
+                s.data = "--" + s.boundary + "\r\n"
                         "Content-Type: text/plain; charset=utf-8\r\n"
                         "Content-Transfer-Encoding: base64\r\n\r\n" +
                         base64::encode(req.body, base64::CRLF) + "\r\n";
                 break;
-            case smtp_request::proto_state::SmtpStage::PartHeader:
+            case smtp_request::proto_state::smtp_stage::PartHeader:
             {
                 // передаем тело вложения или поле формы
-                s._stage = smtp_request::proto_state::SmtpStage::PartBody;
-                mcurl_content_part &p = req.parts.at(static_cast<size_t>(s._partnum));
+                s.stage = smtp_request::proto_state::smtp_stage::PartBody;
+                mcurl_content_part &p = req.attachments.at(static_cast<size_t>(s.partnum));
 
-                if (p.source_type == mcurl_content_part::SourceType::File)
+                if (p.source_type == mcurl_content_part::source_type_t::File)
                 {
                     // вложение забрать из файла
-                    s._in_stream = std::unique_ptr<std::ifstream>(new std::ifstream(p.source, std::ios::binary | std::ios_base::in));
+                    s.in_stream = std::unique_ptr<std::ifstream>(new std::ifstream(p.source, std::ios::binary | std::ios_base::in));
                     //s._in_stream.open(p.source, std::ios::binary | std::ios_base::in);
-                    if (!*s._in_stream)
+                    if (!*s.in_stream)
                     {
-                        s._in_stream->close();
+                        s.in_stream->close();
                         return CURL_READFUNC_ABORT;
                     }
                 }
                 else
                 {
                     // вложение передано в буфере
-                    s._data = base64::encode(p.source, base64::CRLF);
-                    if (!s._data.empty())
+                    s.data = base64::encode(p.source, base64::CRLF);
+                    if (!s.data.empty())
                         break;
                 }
             }
             //[[clang::fallthrough]];
-            case smtp_request::proto_state::SmtpStage::PartBody:
+            case smtp_request::proto_state::smtp_stage::PartBody:
             {
-                mcurl_content_part &p = req.parts.at(static_cast<size_t>(s._partnum));
+                mcurl_content_part &p = req.attachments.at(static_cast<size_t>(s.partnum));
                 // если источник - файл в хорошем состоянии, то нужно прочитать еще кусок
-                if (p.source_type == mcurl_content_part::SourceType::File && *s._in_stream)
+                if (p.source_type == mcurl_content_part::source_type_t::File && *s.in_stream)
                 {
                     std::vector<char> buf(100 * 1024);
-                    s._in_stream->read(buf.data(), buf.size());
+                    s.in_stream->read(buf.data(), buf.size());
                     // если достигнут конец файла, то меняем размер буфера до фактически считанного количества байт
-                    if (s._in_stream->eof())
-                        buf.resize(s._in_stream->gcount());
-                    bool is_bad = s._in_stream->bad();
+                    if (s.in_stream->eof())
+                        buf.resize(s.in_stream->gcount());
+                    bool is_bad = s.in_stream->bad();
                     // при любом недоразумении (включая конец файла) закрываем файл
-                    if (!s._in_stream)
-                        s._in_stream->close();
+                    if (!s.in_stream)
+                        s.in_stream->close();
 
                     // если проблема не в EOF, то прерываем задание
                     if (is_bad)
                         return CURL_READFUNC_ABORT;
 
                     // формируем закодированный в base64 кусок файла
-                    s._data.resize(2 * buf.size() + 3);
+                    s.data.resize(2 * buf.size() + 3);
                     long len = 0;
                     if (!buf.empty())
-                        len += s._b64encoder.encode(buf.data(), buf.size(), &s._data[0]);
-                    if (!s._in_stream->is_open())
-                        len += s._b64encoder.encode_end(&s._data[0] + len);
-                    s._data.resize(len);
+                        len += s.b64encoder.encode(buf.data(), buf.size(), &s.data[0]);
+                    if (!s.in_stream->is_open())
+                        len += s.b64encoder.encode_end(&s.data[0] + len);
+                    s.data.resize(len);
 
                     // если снова получился непустой буфер, то продолжим передачу в рамках текущего этапа
                     if (len)
@@ -500,59 +552,59 @@ private:
                 }
             }
             //[[clang::fallthrough]];
-            case smtp_request::proto_state::SmtpStage::Body:
+            case smtp_request::proto_state::smtp_stage::Body:
             {
                 // проверяем, не закончилось ли содержимое
-                if (s._partnum == static_cast<long>(req.parts.size()) - 1)
+                if (s.partnum == static_cast<long>(req.attachments.size()) - 1)
                 {
                     // завершающий boundary
-                    s._stage = smtp_request::proto_state::SmtpStage::Footer;
-                    s._data = "--" + s._boundary + "--\r\n";
+                    s.stage = smtp_request::proto_state::smtp_stage::Footer;
+                    s.data = "--" + s.boundary + "--\r\n";
                     break;
                 }
 
                 // переход к первому или очередному вложению
-                ++s._partnum;
+                ++s.partnum;
                 // начинаем заголовки вложений или полей формы
-                s._stage = smtp_request::proto_state::SmtpStage::PartHeader;
-                mcurl_content_part &p = req.parts.at(static_cast<size_t>(s._partnum));
-                s._data = "--" + s._boundary +
+                s.stage = smtp_request::proto_state::smtp_stage::PartHeader;
+                mcurl_content_part &p = req.attachments.at(static_cast<size_t>(s.partnum));
+                s.data = "--" + s.boundary +
                         "\r\nContent-Type: " + p.content_type +
                         "\r\nContent-Transfer-Encoding: base64\r\n";
 
                 // inline - умолчательное значение (для тела письма)
-                if (p.disposition != mcurl_content_part::Disposition::Inline)
+                if (p.disposition != mcurl_content_part::disposition_t::Inline)
                 {
                     // form-data вряд ли используется в протоколе smtp
                     // (оставлено для доработки кода к универсальному виду)
-                    s._data += std::string("Content-Disposition: ") +
-                            (p.disposition == mcurl_content_part::Disposition::FormData ? "form-data" : "attachment");
+                    s.data += std::string("Content-Disposition: ") +
+                            (p.disposition == mcurl_content_part::disposition_t::FormData ? "form-data" : "attachment");
                     if (!p.name.empty())
-                        s._data += ";\r\n name=\"" + encode1522(p.name, true) + '"';
+                        s.data += ";\r\n name=\"" + encode1522(p.name, true) + '"';
                     if (!p.filename.empty())
-                        s._data += ";\r\n filename=\"" + encode1522(p.filename, true) + '"';
-                    s._data += "\r\n";
+                        s.data += ";\r\n filename=\"" + encode1522(p.filename, true) + '"';
+                    s.data += "\r\n";
                 }
-                s._data += "\r\n";
+                s.data += "\r\n";
                 break;
             }
-            case smtp_request::proto_state::SmtpStage::Footer:
+            case smtp_request::proto_state::smtp_stage::Footer:
                 // всё отправлено
-                s._data.clear();
-                s._stage = smtp_request::proto_state::SmtpStage::None;
+                s.data.clear();
+                s.stage = smtp_request::proto_state::smtp_stage::None;
                 break;
             }
 
             // рестарт отсчета переданной части текущего буфера
-            s._bytes_done = 0;
+            s.bytes_done = 0;
         }
 
-        size_t len = std::min<size_t>(size * nitems, s._data.size() - s._bytes_done);
+        size_t len = std::min<size_t>(size * nitems, s.data.size() - s.bytes_done);
         if (len)
         {
             // собственно, передача очередного куска данных curl'у
-            memcpy(buffer, s._data.data() + s._bytes_done, len);
-            s._bytes_done += len;
+            memcpy(buffer, s.data.data() + s.bytes_done, len);
+            s.bytes_done += len;
         }
         return len;
     }
@@ -659,7 +711,7 @@ private:
 
             if (std::holds_alternative<smtp_request>(j.req))
             {
-                auto &req = std::get<smtp_request>(j.req);
+                smtp_request &req = std::get<smtp_request>(j.req);
                 if (req.recipients.empty())
                     throw std::runtime_error("recipient is not specified");
 
@@ -675,22 +727,22 @@ private:
                 auto &state = std::get<smtp_request::proto_state>(jg.proto_state);
                 // https://curl.haxx.se/mail/tracker-2013-06/0202.html
                 // якобы, использовать один и тот же разделитель небезопасно...
-                state._boundary = generateBoundary();
+                state.boundary = generateBoundary();
 
-                req.header.push_back("Date: " + timestamp());
-                req.header.push_back("From: " + req.sender);
-                req.header.push_back("To: " + req.recipients.at(0));
+                req.headers.push_back("Date: " + timestamp());
+                req.headers.push_back("From: " + req.sender);
+                req.headers.push_back("To: " + req.recipients.at(0));
                 std::string cc;
                 for (size_t i = 1; i < req.recipients.size(); ++i)
                     cc += (i > 1 ? ",\r\n " : "") + req.recipients.at(i);
                 if (!cc.empty())
-                    req.header.push_back("Cc: " + cc);
+                    req.headers.push_back("Cc: " + cc);
 
                 if (!req.subject.empty())
-                    req.header.push_back("Subject: " + encode1522(req.subject, base64::encoder::im_line_length));
+                    req.headers.push_back("Subject: " + encode1522(req.subject, base64::encoder::im_line_length));
 
-                if (!req.body.empty() || !req.parts.empty())
-                    req.header.push_back("Content-Type: multipart/mixed; boundary=\"" + state._boundary + "\"");
+                if (!req.body.empty() || !req.attachments.empty())
+                    req.headers.push_back("Content-Type: multipart/mixed; boundary=\"" + state.boundary + "\"");
 
                 curl_easy_setopt(easy, CURLOPT_MAIL_FROM, req.sender.c_str());
 
@@ -720,9 +772,9 @@ private:
 
                 //bool content_type_found = false;
                 // добавляем пользовательские заголовки
-                for (std::string &h : req.header)
+                for (std::string &h : req.headers)
                 {
-                    state.curl_header = curl_slist_append(state.curl_header, h.data());
+                    state.curl_headers = curl_slist_append(state.curl_headers, h.data());
                     //if (h.substr(0, 12) == "Content-Type")
                     //    content_type_found = true;
                 }
@@ -734,40 +786,24 @@ private:
                 //if (!j.request_parts.empty())
                 //    j.curl_header = curl_slist_append(j.curl_header, "Content-Type: multipart/form-data");
 
-                if (state.curl_header)
-                    curl_easy_setopt(easy, CURLOPT_HTTPHEADER, state.curl_header);
+                if (state.curl_headers)
+                    curl_easy_setopt(easy, CURLOPT_HTTPHEADER, state.curl_headers);
 
-                if (!req.parts.empty())
+                if (const auto *parts = std::get_if<std::vector<mcurl_content_part>>(&req.body); parts != nullptr && !parts->empty())
                 {
-    #if LIBCURL_VERSION_NUM >= 0x075600
                     state.mime = curl_mime_init(easy);
-    #else
-                    curl_httppost *lastptr = nullptr;
-    #endif
-                    for (size_t i = 0; i < req.parts.size(); ++i)
+                    for (auto &p: *parts)
                     {
-                        auto const &part = req.parts[i];
-    #if LIBCURL_VERSION_NUM < 0x075600
-                        curl_formadd(&(j.formpost), &lastptr,
-                                     CURLFORM_COPYNAME, part.name.c_str(),
-                                     CURLFORM_COPYCONTENTS, part.source.c_str(),
-                                     CURLFORM_END);
-    #else
-                        auto mime_part = curl_mime_addpart(state.mime);
-                        curl_mime_name(mime_part, part.name.c_str());
-                        curl_mime_data(mime_part, part.source.data(), part.source.size());
-    #endif
+                        auto part = curl_mime_addpart(state.mime);
+                        curl_mime_name(part, p.name.c_str());
+                        curl_mime_data(part, p.source.data(), p.source.size());
                     }
-    #if LIBCURL_VERSION_NUM < 0x075600
-                    curl_easy_setopt(easy, CURLOPT_HTTPPOST, j.formpost);
-    #else
                     curl_easy_setopt(easy, CURLOPT_MIMEPOST, state.mime);
-    #endif
                 }
-                else if (!req.body.empty())
+                else if (const auto *body = std::get_if<std::string>(&req.body); body != nullptr && !body->empty())
                 {
-                    curl_easy_setopt(easy, CURLOPT_POSTFIELDS, req.body.data());
-                    curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, req.body.size());
+                    curl_easy_setopt(easy, CURLOPT_POSTFIELDS, body->data());
+                    curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, body->size());
                     curl_easy_setopt(easy, CURLOPT_POST, true);
                 }
                 else
@@ -781,10 +817,10 @@ private:
 
                 set_common(req);
             }
-            curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, write_cb);
-            curl_easy_setopt(easy, CURLOPT_WRITEDATA, &jg.success.response);
-            curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, write_cb);
-            curl_easy_setopt(easy, CURLOPT_WRITEHEADER, &jg.success.response_header);
+            curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, write_body_cb);
+            curl_easy_setopt(easy, CURLOPT_WRITEDATA, &jg.success.body);
+            curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, write_headers_cb);
+            curl_easy_setopt(easy, CURLOPT_HEADERDATA, &jg);
             //curl_easy_setopt(easy, CURLOPT_TCP_KEEPALIVE, true);
             curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, jg.fail.error);
             curl_easy_setopt(easy, CURLOPT_PRIVATE, &jg);

@@ -8,6 +8,3 @@
 * Tests
 * Revise api, constness and so on
 * Translate comments :)
-
-### notice
-Got it out as is. Used in production, tests have been lost.

@@ -3,24 +3,15 @@
 #include <string.h>
 
 std::atomic<int> mcurl_global::instances_counter{0};
-
-mcurl_global::mcurl_global()
+bool ci_comparator::operator()(const std::string &a, const std::string &b) const
 {
-    if (!instances_counter.load())
-    {
-        CURLcode res = curl_global_init(CURL_GLOBAL_DEFAULT);
-        if (res)
-            throw std::runtime_error(curl_easy_strerror(res));
-    }
-    ++instances_counter;
-}
-
-mcurl_global::~mcurl_global()
-{
-    --instances_counter;
-    if (!instances_counter.load())
-        curl_global_cleanup();
-}
+    return std::lexicographical_compare(
+        a.begin(), a.end(),
+        b.begin(), b.end(),
+        [](const char &a, const char &b) -> bool {
+            return tolower(a) < tolower(b);
+        });
+};
 
 std::string encode1522(const std::string &value, bool wrap)
 {
@@ -72,6 +63,24 @@ std::string encode1522(const std::string &value, bool wrap)
     return res;
 }
 
+mcurl_global::mcurl_global()
+{
+    if (!instances_counter.load())
+    {
+        CURLcode res = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (res)
+            throw std::runtime_error(curl_easy_strerror(res));
+    }
+    ++instances_counter;
+}
+
+mcurl_global::~mcurl_global()
+{
+    --instances_counter;
+    if (!instances_counter.load())
+        curl_global_cleanup();
+}
+
 mcurl_content_part mcurl_content_part::file(std::string_view file_path, std::string_view destination_file_name)
 {
     mcurl_content_part p;
@@ -94,20 +103,19 @@ mcurl_content_part mcurl_content_part::file(std::string_view file_path, std::str
 mcurl_content_part mcurl_content_part::file_from_buffer(std::string_view buffer, std::string_view destination_file_name)
 {
     mcurl_content_part p;
-    p.source_type = SourceType::Buffer;
+    p.source_type = source_type_t::Buffer;
     p.source = buffer;
     if (!destination_file_name.empty())
-    {
         p.filename = destination_file_name;
-    }
+
     return p;
 }
 
 mcurl_content_part mcurl_content_part::form_data(std::string_view name, std::string_view buffer)
 {
     mcurl_content_part p;
-    p.source_type = SourceType::Buffer;
-    p.disposition = Disposition::FormData;
+    p.source_type = source_type_t::Buffer;
+    p.disposition = disposition_t::FormData;
     p.source = buffer;
     p.name = name;
     return p;
@@ -119,15 +127,10 @@ smtp_request::proto_state::~proto_state()
     // методом enqueue(Job &&), не получится снаружи менять поля задания и
     // косвенно воздействовать на внутренние переменные вроде curl_header, поэтому
     // всё дотерпит до деструктора Job
-    if (curl_header)
-        curl_slist_free_all(curl_header);
+    if (curl_headers)
+        curl_slist_free_all(curl_headers);
     if (curl_recipients)
         curl_slist_free_all(curl_recipients);
-#if LIBCURL_VERSION_NUM < 0x075600
-    if (formpost)
-        curl_formfree(formpost);
-#else
     if (mime)
         curl_mime_free(mime);
-#endif
 }

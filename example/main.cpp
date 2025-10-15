@@ -12,8 +12,7 @@ int main(int argc, char *argv[])
 {
     //mcurl sender;
     //  make the result handler capture non-copyable objects:
-    mcurl<fu2::unique_function<void(mcurl_request&, mcurl_event)>> sender;
-
+    mcurl<MCURL_CALLABLE(fu2::unique_function)> sender;
 
     ev::default_loop loop;
     ev::sig term_signal_watcher;
@@ -42,13 +41,15 @@ int main(int argc, char *argv[])
         r.uri = "https://httpbin.org/post";
         r.body = "request=" + std::to_string(i);
 
-        sender.enqueue({r}, [i, &sender, reqCount](mcurl_request &r, mcurl_event e){
+        auto print = [](size_t i, mcurl_request &, mcurl_event e)
+        {
             if (std::holds_alternative<mcurl_success>(e))
             {
                 auto &res = std::get<mcurl_success>(e);
-                std::cout << i << ": response " << res.status << std::endl
-                     << res.response_header << std::endl
-                     << res.response << std::endl;
+                std::cout << i << ": response " << res.status << std::endl;
+                for (auto &h: res.headers)
+                    std::cout << "   " << h.first << ": " << h.second;
+                std::cout << std::endl << res.body << std::endl;
             }
             else if (std::holds_alternative<mcurl_fail>(e))
             {
@@ -56,26 +57,17 @@ int main(int argc, char *argv[])
                 std::cout << i << ": error " << res.error << std::endl
                      << "status " << res.status << std::endl;
             }
+        };
 
+        sender.enqueue({r}, [i, &sender, reqCount, &print](mcurl_request &r, mcurl_event e){
+            print(i, r, e);
             // request again
             auto &req = std::get<http_request>(r);
             auto j = i + reqCount;
             req.body = "request=" + std::to_string(j);
 
-            sender.enqueue({std::move(r)}, [j](mcurl_request &, mcurl_event e){
-                if (std::holds_alternative<mcurl_success>(e))
-                {
-                    auto &res = std::get<mcurl_success>(e);
-                    std::cout << j << ": response " << res.status << std::endl
-                         << res.response_header << std::endl
-                         << res.response << std::endl;
-                }
-                else if (std::holds_alternative<mcurl_fail>(e))
-                {
-                    auto &res = std::get<mcurl_fail>(e);
-                    std::cout << j << ": error " << res.error << std::endl
-                         << "status " << res.status << std::endl;
-                }
+            sender.enqueue({std::move(r)}, [j, &print](mcurl_request &r, mcurl_event e){
+                print(j, r, e);
             });
         });
     }
