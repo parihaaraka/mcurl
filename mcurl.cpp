@@ -134,3 +134,48 @@ smtp_request::proto_state::~proto_state()
     if (mime)
         curl_mime_free(mime);
 }
+
+// make sure dst has `src.size()*3` bytes available
+size_t append_url_encoded(char *dst, std::string_view src, bool asterisk2hex, bool space2hex)
+{
+    static char tbl[256] = {0x7f};
+    if (tbl[0] == 0x7f)
+    {
+        for (size_t i = 0; i < 256; i++)
+            tbl[i] = isalnum(i) || i == '~' || i == '-' || i == '.' || i == '_' ? i : 0;
+    }
+
+    char *end = dst;
+    auto put_hex = [&end](char c)
+    {
+        constexpr char hexmap[] = "0123456789ABCDEF";
+        *end++ = '%';
+        *end++ = hexmap[static_cast<uint8_t>(c) >> 4];
+        *end++ = hexmap[c & 0xF];
+    };
+
+    for (auto c: src)
+    {
+        switch (c)
+        {
+        case '*':
+            if (asterisk2hex)
+                put_hex(c);
+            else
+                *end++ = c;
+            break;
+        case ' ':
+            if (space2hex)
+                put_hex(c);
+            else
+                *end++ = '+';
+            break;
+        default:
+            if (tbl[(size_t)c])
+                *end++ = tbl[(size_t)c];
+            else
+                put_hex(c);
+        }
+    }
+    return end - dst;
+}

@@ -29,6 +29,17 @@
 struct ci_comparator { bool operator()(const std::string &a, const std::string &b) const; };
 std::string encode1522(const std::string &value, bool wrap);
 
+size_t append_url_encoded(char *dst, std::string_view src, bool asterisk2hex = true, bool space2hex = false);
+template <typename C>
+void append_url_encoded(C &dst, std::string_view src, bool asterisk2hex = true, bool space2hex = false)
+{
+    size_t prev_size = dst.size();
+    dst.resize(dst.size() + src.size() * 3);
+    char *end = dst.data() + prev_size;
+    size_t appended_size = append_url_encoded(end, src, asterisk2hex, space2hex);
+    dst.resize(prev_size + appended_size);
+}
+
 struct mcurl_success
 {
     std::string body;
@@ -774,7 +785,7 @@ private:
                 // добавляем пользовательские заголовки
                 for (std::string &h : req.headers)
                 {
-                    state.curl_headers = curl_slist_append(state.curl_headers, h.data());
+                    state.curl_headers = curl_slist_append(state.curl_headers, h.c_str());
                     //if (h.substr(0, 12) == "Content-Type")
                     //    content_type_found = true;
                 }
