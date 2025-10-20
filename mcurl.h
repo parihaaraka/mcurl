@@ -235,7 +235,15 @@ private:
     ev::timer _timeout_timer;
     ev::async _new_job_watcher;
 
-    std::atomic_char _mode_wanted;
+    enum class mode_wanted
+    {
+        active,
+        ignore_new_jobs,           // don't acquire new jobs
+        finalize_started_and_stop, // ignore jobs, finalize started jobs and stop all pollers after that
+        stop_the_globe             // stop all pollers, clear all jobs as is
+    };
+
+    std::atomic<mode_wanted> _mode_wanted;
     ev::async _stop_signal_watcher;
 
     // man: "After each single curl_easy_perform operation, libcurl will keep the connection alive and open.
@@ -289,14 +297,21 @@ public:
         check_multi_info();
     }
 
-    void stop_cb(ev::async &, int) noexcept
+    void expected_mode_cb(ev::async &, int) noexcept
     {
-        if (_mode_wanted == 's')
+        if (_mode_wanted == mode_wanted::ignore_new_jobs)
         {
-            _stop_signal_watcher.stop();
+            _terminate_on_finish = false;
             _new_job_watcher.stop();
         }
-        else if (_mode_wanted == 't')
+        else if (_mode_wanted == mode_wanted::finalize_started_and_stop)
+        {
+            _terminate_on_finish = true;
+            _new_job_watcher.stop();
+            if (_on_the_go.empty())
+                terminate();
+        }
+        else if (_mode_wanted == mode_wanted::stop_the_globe)
         {
             _stop_signal_watcher.stop();
 
@@ -337,8 +352,8 @@ public:
 
         _timeout_timer.set<mcurl, &mcurl::timer_cb>(this);
 
-        _mode_wanted = 'a';  // active
-        _stop_signal_watcher.set<mcurl, &mcurl::stop_cb>(this);
+        _mode_wanted = mode_wanted::active;
+        _stop_signal_watcher.set<mcurl, &mcurl::expected_mode_cb>(this);
         _stop_signal_watcher.start();
 
         _new_job_watcher.set<mcurl, &mcurl::new_job_cb>(this);
@@ -356,20 +371,28 @@ public:
             _new_job_watcher.send();
     }
 
-    /// stop acquiring new jobs
-    void stop()
+    /// ignore_new_jobs acquiring new jobs
+    void ignore_new_jobs()
     {
-        if (_mode_wanted == 's')
+        if (_mode_wanted == mode_wanted::ignore_new_jobs)
             return;
-        _mode_wanted = 's';
+        _mode_wanted = mode_wanted::ignore_new_jobs;
+        _stop_signal_watcher.send();
+    }
+
+    void finalize_started_and_stop()
+    {
+        if (_mode_wanted == mode_wanted::finalize_started_and_stop)
+            return;
+        _mode_wanted = mode_wanted::stop_the_globe;
         _stop_signal_watcher.send();
     }
 
     void terminate()
     {
-        if (_mode_wanted == 't')
+        if (_mode_wanted == mode_wanted::stop_the_globe)
             return;
-        _mode_wanted = 't';
+        _mode_wanted = mode_wanted::stop_the_globe;
         _stop_signal_watcher.send();
     }
 
@@ -921,6 +944,10 @@ private:
                 // попробуем взять еще одно задание
                 if (_new_job_watcher.is_active())
                     _new_job_watcher.send();
+                else if (_on_the_go.empty() && _terminate_on_finish)
+                    terminate();
+                return;
+
             }
         }
     }
