@@ -127,12 +127,8 @@ smtp_request::proto_state::~proto_state()
     // методом enqueue(Job &&), не получится снаружи менять поля задания и
     // косвенно воздействовать на внутренние переменные вроде curl_header, поэтому
     // всё дотерпит до деструктора Job
-    if (curl_headers)
-        curl_slist_free_all(curl_headers);
     if (curl_recipients)
         curl_slist_free_all(curl_recipients);
-    if (mime)
-        curl_mime_free(mime);
 }
 
 // make sure dst has `src.size()*3` bytes available
@@ -179,3 +175,12 @@ size_t append_url_encoded(char *dst, std::string_view src, bool asterisk2hex, bo
     }
     return end - dst;
 }
+
+request_common::proto_state::~proto_state()
+{
+    if (curl_headers)
+        curl_slist_free_all(curl_headers);
+    if (mime)
+        curl_mime_free(mime);
+}
+

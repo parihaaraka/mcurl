@@ -90,6 +90,7 @@ struct request_common
         std::string prev_header;
     protected:
         proto_state() = default;
+        ~proto_state();
     };
 
     std::string uri;
