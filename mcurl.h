@@ -470,7 +470,7 @@ private:
             return total;
         auto raw = std::string_view{static_cast<char*>(input), total};
         // folded header continuation
-        if (std::isspace(raw.front()))
+        if (std::isspace(raw.front()) && raw.front() != '\r')
         {
             auto &s = j.state();
             if (!s.prev_header.empty())
@@ -478,6 +478,8 @@ private:
                 if (auto it = headers.find(s.prev_header); it != headers.end())
                 {
                     raw.remove_prefix(std::min(raw.find_first_not_of(" \t\r\v"), raw.size()));
+                    while (raw.size() && std::isspace(raw.back()))
+                        raw.remove_suffix(1);
                     it->second.append(raw);
                 }
             }
@@ -487,6 +489,8 @@ private:
             auto key = raw.substr(0, pos);
             auto val = raw.substr(std::min(pos + 1, raw.size()), raw.size() - pos - 1);
             val.remove_prefix(std::min(val.find_first_not_of(" \t"), val.size()));
+            while (val.size() && std::isspace(val.back()))
+                val.remove_suffix(1);
             auto &s = j.state();
             s.prev_header = key;
             headers[s.prev_header] = val;
