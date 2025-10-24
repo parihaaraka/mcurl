@@ -290,6 +290,16 @@ public:
     size_t running_jobs_count() const { return _on_the_go.size(); }
     void set_max_transfers(size_t num) { _max_simultanous_transfers = num; }
 
+    std::string state() const
+    {
+        std::string s;
+        s += std::string("max_simultaneous_transfers: ") + std::to_string(_max_simultanous_transfers.load()) + "\n";
+        s += std::string("active: ") + (is_active() ? "true" : "false") + "\n";
+        s += std::string("running_jobs: ") + std::to_string(_on_the_go.size()) + "\n";
+        s += std::string("in_queue: ") + std::to_string(_in_queue.size()) + "\n";
+        return s;
+    }
+
     void timer_cb(ev::timer &, int)
     {
         int running_handles;
