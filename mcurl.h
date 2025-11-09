@@ -101,6 +101,8 @@ struct request_common
     std::string ca;
     std::string proxy;
     bool verify_peer = true;
+    long timeout = 0;
+
 protected:
     request_common() = default;
 };
@@ -740,6 +742,9 @@ private:
                 curl_easy_setopt(easy, CURLOPT_SSLCERT, std::string(req.cert + ".pem").c_str());
                 curl_easy_setopt(easy, CURLOPT_SSLKEY, std::string(req.cert + ".key").c_str());
             }
+
+            if (req.timeout > 0)
+                curl_easy_setopt(easy, CURLOPT_TIMEOUT, req.timeout);
         };
 
         try
