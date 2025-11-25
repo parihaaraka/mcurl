@@ -64,8 +64,6 @@ struct mcurl_content_part
     // for smtp always `Content-Transfer-Encoding: base64`
     // https://developer.mozilla.org/ru/docs/Web/HTTP/Reference/Headers/Content-Disposition
     enum class disposition_t { Inline, FormData, Attachment };
-
-    // POST request attachments are not implemented (TODO?)
     enum class source_type_t  { Buffer, File };
 
     source_type_t source_type = source_type_t::File;
@@ -849,8 +847,33 @@ private:
                     for (auto &p: *parts)
                     {
                         auto part = curl_mime_addpart(state.mime);
-                        curl_mime_name(part, p.name.c_str());
-                        curl_mime_data(part, p.source.data(), p.source.size());
+                        if (!p.name.empty())
+                            curl_mime_name(part, p.name.c_str());
+                        if (!p.filename.empty())
+                            curl_mime_filename(part, p.filename.c_str());
+                        if (!p.content_type.empty())
+                            curl_mime_type(part, p.content_type.c_str());
+
+                        if (p.disposition != mcurl_content_part::disposition_t::FormData)
+                        {
+                            std::string disposition = "Content-Disposition: ";
+                            disposition += (p.disposition == mcurl_content_part::disposition_t::Attachment ? "attachment" : "inline");
+                            if (!p.name.empty())
+                                disposition += "; name=\"" + p.name + "\"";
+                            if (!p.filename.empty())
+                                disposition += "; filename=\"" + p.filename + "\"";
+                            auto headers = curl_slist_append(nullptr, disposition.c_str());
+                            curl_mime_headers(part, headers, 1);
+                        }
+
+                        if (p.source_type == mcurl_content_part::source_type_t::File)
+                        {
+                            curl_mime_filedata(part, p.source.c_str());
+                        }
+                        else
+                        {
+                            curl_mime_data(part, p.source.data(), p.source.size());
+                        }
                     }
                     curl_easy_setopt(easy, CURLOPT_MIMEPOST, state.mime);
                 }
