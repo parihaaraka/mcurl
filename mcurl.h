@@ -40,7 +40,7 @@ struct mcurl_success
 struct mcurl_fail
 {
     char error[CURL_ERROR_SIZE] = {0};
-    long status = 0;
+    long code = 0; // the return code for the easy handle that just completed
 };
 struct mcurl_trace
 {
@@ -690,7 +690,7 @@ private:
         // функция для завершения задания при ошибке его инициализации и запуска
         auto finalize_job = [this, &jg]()
         {
-            jg.fail.status = 1000;
+            jg.fail.code = 1000;
             // если длина ошибки превышает размер буфера, то это избавит от проблем :)
             jg.fail.error[CURL_ERROR_SIZE - 1] = 0;
 
@@ -962,7 +962,7 @@ private:
                         {
                             strncpy(job->fail.error, curl_easy_strerror(ret), sizeof(job->fail.error) - 1);
                             job->fail.error[sizeof(job->fail.error) - 1] = '\0';
-                            job->fail.status = msg->data.result;
+                            job->fail.code = msg->data.result;
                             job->j.on_event(job->j.req, mcurl_event{job->fail});
                         }
                     }
