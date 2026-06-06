@@ -896,6 +896,10 @@ private:
             curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 8L);
             curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 30L);
 
+            curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https"); //By default libcurl allows HTTP, HTTPS, FTP and FTPS on redirects (since 7.65.2).
+            curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 2L);
+
             curl_easy_setopt(easy, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1);
 
             // добавление easy handle инициирует работу (запуск таймера и т.п.)
